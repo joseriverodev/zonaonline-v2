@@ -1,0 +1,102 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
+}
+
+model Category {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  products  Product[]
+}
+
+model Product {
+  id         String          @id @default(cuid())
+  name       String
+  measure    String
+  price      Float
+  salePrice  Float?          
+  stock      Int             @default(0)
+  image      String
+  gallery    String[]        @default([])
+  videoUrl   String?         
+  imageId    String?
+  isActive   Boolean         @default(true)
+  categoryId String
+  category   Category        @relation(fields: [categoryId], references: [id])
+  variants   ProductVariant[]
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+}
+
+model ProductVariant {
+  id        String  @id @default(cuid())
+  name      String
+  image     String
+  imageId   String?
+  stock     Int     @default(0)
+  price     Float?  
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  
+  @@index([productId])
+}
+
+model AdminSession {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+model SiteConfig {
+  id           Int      @id @default(1)
+  whatsapp     String   @default("000000000000")
+  phoneCall    String?
+  instagram    String?
+  tiktok       String?
+  heroTitle    String  @default("Welcome to our store")
+  heroSubtitle String  @default("Browse our catalog and order via WhatsApp")
+  heroImage    String  @default("/hero-banner.png")
+  updatedAt    DateTime @updatedAt
+}
+
+model Coupon {
+  id                 String   @id @default(cuid())
+  code               String   @unique
+  discountPercentage Float
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model Banner {
+  id               String   @id @default(cuid())
+  imageUrl         String
+  mobileImageUrl   String?
+  mobileImageFocus String   @default("center")
+  titleLine1       String?
+  titleLine2       String?
+  subtitle         String?
+  buttonText       String?
+  buttonLink       String?
+  textPosition     String   @default("ml")
+  textColor        String   @default("white")
+  textColor2       String   @default("pink")
+  fontFamily       String   @default("playfair")
+  overlayColor     String   @default("black")
+  overlayOpacity   Int      @default(40)
+  isActive         Boolean  @default(true)
+  order            Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
