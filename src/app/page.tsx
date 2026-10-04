@@ -136,7 +136,7 @@ export default function Home() {
       const name = item.product.name; const variantName = item.variant ? ` (${item.variant.name})` : ""; const desc = item.product.measure
       const itemPrice = item.variant?.price ? item.variant.price : item.product.price; const price = itemPrice.toFixed(2)
       const photo = item.variant && item.variant.image ? item.variant.image : item.product.image
-      message += `🔸 *${item.quantity}x* ${name}${variantName} - ${desc} - $${price}\n`; message += `🔗 Foto: ${photo}`; if (index < cart.length - 1) message += `\n\n`
+      message += `🔸 ${name}${variantName} - ${desc} - $${price}\n`; message += `🔗 Foto: ${photo}`; if (index < cart.length - 1) message += `\n\n`
     })
     message += `\n\n`
     message += `💰 *Total: $${total.toFixed(2)}*`
@@ -235,7 +235,7 @@ export default function Home() {
         </DialogContent>
       </Dialog>
 
-      {cart.length > 0 && (<button onClick={() => setCartOpen(true)} className="fixed bottom-4 right-4 md:bottom-8 md:right-8 bg-[#0369A1] text-white p-4 rounded-2xl shadow-lg hover:bg-[#075985] transition-colors z-30 flex items-center gap-3"><ShoppingBag className="w-6 h-6" /><span className="font-medium">{cart.reduce((acc, item) => acc + item.quantity, 0)}</span></button>)}
+            {cart.length > 0 && (<button onClick={() => setCartOpen(true)} className="fixed bottom-4 right-4 md:bottom-8 md:right-8 bg-[#0369A1] text-white p-4 rounded-2xl shadow-lg hover:bg-[#075985] transition-colors z-30 flex items-center gap-3"><ShoppingBag className="w-6 h-6" /><span className="font-medium">{cart.length}</span></button>)}
 
       <Dialog open={cartOpen} onOpenChange={setCartOpen}>
         <DialogContent showCloseButton={false} className="!w-[95vw] sm:!max-w-[500px] max-h-[90vh] p-0 overflow-hidden bg-white rounded-3xl border border-black/5 shadow-[0_20px_50px_rgba(0,0,0,0.08)] flex flex-col">
@@ -243,11 +243,12 @@ export default function Home() {
           <div className="flex-1 overflow-y-auto p-6 space-y-4">
             {cart.length === 0 ? (<div className="text-center py-10"><ShoppingBag className="w-12 h-12 text-black/10 mx-auto mb-4" /><p className="text-[#6B6B6B]">Tu carrito está vacío</p></div>) : (
               <>
-                {cart.map((item, index) => { const itemPrice = item.variant?.price ? item.variant.price : item.product.price; return (
+                                {cart.map((item, index) => { const itemPrice = item.variant?.price ? item.variant.price : item.product.price; return (
                   <div key={index} className="flex gap-4 border-b border-black/5 pb-4">
                     <div className="w-16 h-16 rounded-xl overflow-hidden bg-[#FAFAFA] flex-shrink-0 border border-black/5"><img src={item.variant && item.variant.image ? item.variant.image : item.product.image} alt={item.product.name} className="w-full h-full object-cover" /></div>
-                    <div className="flex-1"><h3 className="font-medium text-[#1F1F1F] text-sm">{item.product.name}</h3>{item.variant && <p className="text-xs text-[#6B6B6B]">{item.variant.name}</p>}<p className="text-sm text-[#0369A1] font-semibold mt-1">${itemPrice.toFixed(2)}</p>
-                      <div className="flex items-center gap-2 mt-2"><button onClick={() => updateQuantity(index, item.quantity - 1)} className="p-1 rounded-md hover:bg-black/5"><Minus className="w-3 h-3 text-[#1F1F1F]" /></button><span className="text-sm font-medium w-6 text-center">{item.quantity}</span><button onClick={() => updateQuantity(index, item.quantity + 1)} className="p-1 rounded-md hover:bg-black/5"><Plus className="w-3 h-3 text-[#1F1F1F]" /></button><button onClick={() => removeFromCart(index)} className="ml-auto p-1 text-red-500 hover:bg-red-50 rounded-md"><Trash2 className="w-4 h-4" /></button></div>
+                    <div className="flex-1"><h3 className="font-medium text-[#1F1F1F] text-sm">{item.product.name}</h3>{item.variant && <p className="text-xs text-[#6B6B6B]">{item.variant.name}</p>}<p className="text-sm text-[#0369A1] font-semibold mt-1">${itemPrice.toFixed(2)}</p></div>
+                    <div className="flex flex-col items-end justify-between shrink-0">
+                      <button onClick={() => removeFromCart(index)} className="p-2 text-red-500 hover:bg-red-50 rounded-md"><Trash2 className="w-4 h-4" /></button>
                     </div>
                   </div>) })}
               </>
