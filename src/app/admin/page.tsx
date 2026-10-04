@@ -142,12 +142,38 @@ export default function AdminPage() {
 
   const handleSubmitProduct = async (e: React.FormEvent) => {
     e.preventDefault(); if (isSubmittingProduct) return; if (!productName.trim() || !productMeasure.trim() || !productPrice || parseFloat(productPrice) <= 0 || !productCategory || unifiedImages.length === 0) return alert('Faltan datos obligatorios')
-    setIsSubmittingProduct(true); const formData = new FormData()
+    setIsSubmittingProduct(true)
+
+    // Comprimir cada imagen antes de enviar (Vercel limita cada request a ~4.5MB)
+    const compressedImages: File[] = []
+    try {
+      for (const img of unifiedImages) {
+        if (img.file) {
+          try {
+            const compressed = await imageCompression(img.file, { maxSizeMB: 1.0, maxWidthOrHeight: 2000, useWebWorker: true })
+            compressedImages.push(compressed)
+          } catch {
+            compressedImages.push(img.file)
+          }
+        }
+      }
+    } catch (error) {
+      console.error(error)
+    }
+
+    // Guardia: si el total igual supera el límite, avisar en cristiano
+    const totalBytes = compressedImages.reduce((t, f) => t + f.size, 0)
+    if (totalBytes > 3_500_000) {
+      setIsSubmittingProduct(false)
+      return alert('Son muchas o muy pesadas las fotos de esta publicación. Intenta con menos fotos por publicación.')
+    }
+
+    const formData = new FormData()
     formData.append('name', productName.trim()); formData.append('measure', productMeasure.trim()); formData.append('price', productPrice); formData.append('salePrice', ''); formData.append('stock', '99'); formData.append('categoryId', productCategory); formData.append('videoUrl', productVideoUrl)
     formData.append('variants', JSON.stringify(productVariants.filter(v => v.name.trim() !== '').map(v => ({ name: v.name, image: v.image, imageId: v.imageId, stock: 99, price: null }))))
     formData.append('orderedUrls', JSON.stringify(unifiedImages.map(img => img.file ? 'NEW_FILE' : img.url)))
-    unifiedImages.forEach(img => { if (img.file) formData.append('images', img.file) })
-    try { let result = editingProduct ? await updateProduct(editingProduct.id, formData) : await createProduct(formData); if (result.success && result.product) { if (editingProduct) setProducts(products.map(p => p.id === editingProduct.id ? result.product as Product : p)); else setProducts([result.product as Product, ...products]); closeProductModal() } else alert(result.error || 'Error') } catch (error) { console.error(error); alert('Error') } finally { setIsSubmittingProduct(false) }
+    compressedImages.forEach(f => formData.append('images', f))
+    try { let result = editingProduct ? await updateProduct(editingProduct.id, formData) : await createProduct(formData); if (result.success && result.product) { if (editingProduct) setProducts(products.map(p => p.id === editingProduct.id ? result.product as Product : p)); else setProducts([result.product as Product, ...products]); closeProductModal() } else alert(result.error || 'Error') } catch (error) { console.error(error); alert('Error de conexión. Intenta de nuevo.') } finally { setIsSubmittingProduct(false) }
   }
 
   const handleSubmitCategory = async (e: React.FormEvent) => {
