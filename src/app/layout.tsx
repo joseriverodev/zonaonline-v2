@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Poppins, Playfair_Display, Great_Vibes } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
@@ -25,11 +25,23 @@ const script = Great_Vibes({
 });
 
 export const metadata: Metadata = {
-  title: "WhatsApp Catalog",
-  description: "Product catalog with WhatsApp ordering. Browse products, build your cart, and send your order.",
+  title: "ZonaOnlineVzla - Tu tienda de variedades",
+  description: "Tu tienda online de confianza. Descubre nuestra amplia selección de productos de calidad a precios increíbles. Entregas personales en Caracas, delivery y envíos a nivel nacional.",
+  keywords: ["ZonaOnline", "tienda online", "compras", "variedades", "delivery", "productos"],
+  authors: [{ name: "ZonaOnlineVzla" }],
   icons: {
     icon: "/icon.png",
   },
+  openGraph: {
+    title: "ZonaOnlineVzla - Tu tienda de variedades",
+    description: "Todo lo que necesitas, directo a ti. Entregas personales en Caracas, delivery y envíos a nivel nacional.",
+    type: "website",
+    locale: "es_VE",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0284C7",
 };
 
 export default function RootLayout({
