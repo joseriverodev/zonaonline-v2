@@ -126,13 +126,17 @@ export default function AdminPage() {
   }
 
   const handleLogin = async () => {
-    const result = await login(password)
-    if (result.success) {
-      setIsAuthenticated(true)
-      sessionStorage.setItem('adminAuth', 'true')
-      setAuthError('')
-    } else {
-      setAuthError(result.error || 'Contraseña incorrecta')
+    try {
+      const result = await login(password)
+      if (result.success) {
+        setIsAuthenticated(true)
+        sessionStorage.setItem('adminAuth', 'true')
+        setAuthError('')
+      } else {
+        setAuthError(result.error || 'Contraseña incorrecta')
+      }
+    } catch {
+      setAuthError('Error de conexión. Intenta de nuevo.')
     }
   }
   const handleLogout = async () => {
