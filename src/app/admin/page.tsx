@@ -85,6 +85,7 @@ export default function AdminPage() {
   const [banners, setBanners] = useState<Banner[]>([])
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'paused'>('all')
   const [categoryFilter, setCategoryFilter] = useState('Todas')
   const [showProductModal, setShowProductModal] = useState(false)
   const [showCategoryModal, setShowCategoryModal] = useState(false)
@@ -187,7 +188,6 @@ export default function AdminPage() {
     try {
       // 1. Comprimir + subir cada imagen DIRECTO a Cloudinary, en paralelo
       const filesToUpload = unifiedImages.filter(img => img.file)
-      const existingUrls = unifiedImages.filter(img => !img.file)
 
       setUploadStatus({ done: 0, total: filesToUpload.length })
 
@@ -239,7 +239,7 @@ export default function AdminPage() {
     try { const formData = new FormData(); formData.append('whatsapp', cfgWhatsapp); formData.append('phoneCall', cfgPhoneCall); formData.append('instagram', cfgInstagram); formData.append('tiktok', cfgTiktok); const result = await updateSiteConfig(formData); if (result.success) { alert('Configuración guardada'); fetchData() } else alert(result.error) } catch (error) { console.error(error) } finally { setIsSubmittingConfig(false) }
   }
 
-  const handleBannerKeyDown = (e: React.KeyboardEvent) => { if (e.key === 'Enter') { e.preventDefault(); const target = e.target as HTMLInputElement | HTMLTextAreaElement; if (target.tagName === 'TEXTAREA') { const start = target.selectionStart; const end = target.selectionEnd; target.value = target.value.substring(0, start) + '\n' + target.value.substring(end); target.selectionStart = target.selectionEnd = start + 1 } } }
+  const handleBannerKeyDown = (e: React.KeyboardEvent) => { if (e.key === 'Enter') { e.preventDefault(); const target = e.target as HTMLInputElement | HTMLTextAreaElement; if (target.tagName === 'TEXTAREA' && target.selectionStart !== null && target.selectionEnd !== null) { const start = target.selectionStart; const end = target.selectionEnd; target.value = target.value.substring(0, start) + '\n' + target.value.substring(end); target.selectionStart = target.selectionEnd = start + 1 } } }
 
   const handleSubmitBanner = async (e: React.FormEvent) => {
     e.preventDefault(); if (isSubmittingBanner) return; if (!bannerImage && !currentBannerImage) return alert('La imagen es obligatoria')
