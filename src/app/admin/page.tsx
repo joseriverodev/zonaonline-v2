@@ -85,7 +85,7 @@ export default function AdminPage() {
   const [banners, setBanners] = useState<Banner[]>([])
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'paused'>('all')
+  const [categoryFilter, setCategoryFilter] = useState('Todas')
   const [showProductModal, setShowProductModal] = useState(false)
   const [showCategoryModal, setShowCategoryModal] = useState(false)
   const [showBannerModal, setShowBannerModal] = useState(false)
@@ -143,8 +143,9 @@ export default function AdminPage() {
 
   const filteredProducts = products.filter(product => {
     const matchesSearch = normalizeText(product.name).includes(normalizeText(searchQuery));
+    const matchesCategory = categoryFilter === 'Todas' || product.category?.name === categoryFilter
     const matchesStatus = statusFilter === 'all' ? true : statusFilter === 'active' ? product.isActive : !product.isActive
-    return matchesSearch && matchesStatus
+    return matchesSearch && matchesCategory && matchesStatus
   })
 
   const handleToggleActive = async (productId: string) => { try { const result = await toggleProductActive(productId); if (result.success && result.product) { setProducts(products.map(p => p.id === productId ? { ...p, isActive: result.product!.isActive } : p)) } } catch (error) { console.error(error) } }
@@ -325,9 +326,15 @@ export default function AdminPage() {
 
         {activeTab === 'products' && (
           <div className="space-y-4">
-            <div className="flex flex-col sm:flex-row gap-3 md:gap-4">
+            <div className="flex flex-col gap-3 md:flex-row md:gap-4">
               <div className="relative flex-grow"><Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[#6B6B6B]" /><Input type="text" placeholder="Buscar productos..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-12 h-12 bg-white border-black/10 rounded-xl focus:border-[#0369A1] focus:ring-[#0369A1]/20" /></div>
-              <Button onClick={() => setShowProductModal(true)} className="h-12 bg-[#0369A1] hover:bg-[#075985] rounded-xl px-6 transition-colors duration-300 text-base"><Plus className="w-5 h-5 mr-2" /> Nuevo Producto</Button>
+              <div className="flex gap-3 md:gap-4">
+                <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="h-12 flex-1 sm:w-52 sm:flex-none px-3 border border-black/10 rounded-xl bg-white text-base focus:outline-none focus:ring-2 focus:ring-[#0369A1]/20 focus:border-[#0369A1]">
+                  <option value="Todas">Todas las categorías</option>
+                  {categories.map(cat => (<option key={cat.id} value={cat.name}>{cat.name}</option>))}
+                </select>
+                <Button onClick={() => setShowProductModal(true)} className="h-12 flex-1 sm:flex-none bg-[#0369A1] hover:bg-[#075985] rounded-xl px-4 sm:px-6 transition-colors duration-300 text-base"><Plus className="w-5 h-5 mr-1 sm:mr-2" /> Nuevo Producto</Button>
+              </div>
             </div>
             {loading ? (<div className="text-center py-16 bg-white rounded-2xl border border-black/5"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-[#0369A1] mx-auto mb-4"></div><p className="text-[#6B6B6B]">Cargando...</p></div>) : (
               <>
