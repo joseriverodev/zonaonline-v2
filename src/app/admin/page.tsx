@@ -14,7 +14,7 @@ import { SidebarTrigger } from '@/components/ui/sidebar'
 import imageCompression from 'browser-image-compression'
 import { login, logout } from '@/actions/auth'
 
-const CLOUD_NAME = "dg4yc"
+const CLOUD_NAME = "dg4ycno52"
 const UPLOAD_PRESET = "zonaonline_unsigned"
 
 function uploadDirect(file: File): Promise<{ url: string; publicId: string }> {
