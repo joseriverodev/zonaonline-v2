@@ -27,6 +27,11 @@ interface VariantInput {
   price?: number | null
 }
 
+interface FinalImage {
+  url: string
+  publicId: string | null
+}
+
 // ============ PRODUCTS ============
 
 export async function getProducts() {
@@ -69,6 +74,8 @@ export async function getProductById(id: string) {
   }
 }
 
+// Create product — receives images ALREADY uploaded to Cloudinary from the client.
+// The server action only writes to the database (sub-second, no file transfers).
 export async function createProduct(formData: FormData) {
   const authed = await requireAuth()
   if (!authed) return { success: false, error: 'No autorizado' }
@@ -78,11 +85,20 @@ export async function createProduct(formData: FormData) {
     const measure = formData.get('measure') as string
     const price = parseFloat(formData.get('price') as string)
     const categoryId = formData.get('categoryId') as string
-    const stock = parseInt(formData.get('stock') as string) || 0
     const videoUrl = (formData.get('videoUrl') as string) || null
 
-    const salePriceRaw = formData.get('salePrice') as string
-    const salePrice = salePriceRaw ? parseFloat(salePriceRaw) : null
+    const finalImagesRaw = formData.get('finalImages') as string
+    let finalImages: FinalImage[] = []
+    try {
+      const parsed = JSON.parse(finalImagesRaw || '[]')
+      if (Array.isArray(parsed)) finalImages = parsed
+    } catch (parseError) {
+      console.error('Error parsing finalImages JSON:', parseError)
+      finalImages = []
+    }
+
+    if (finalImages.length === 0) return { success: false, error: 'Falta la imagen del producto' }
+    const main = finalImages[0]
 
     const variantsRaw = formData.get('variants') as string
     let variants: VariantInput[] = []
@@ -100,28 +116,12 @@ export async function createProduct(formData: FormData) {
       variants = []
     }
 
-    const imageFiles = formData.getAll('images') as File[]
-    let image = ''
-    let imageId = null
-    const galleryUrls: string[] = []
-
-    for (let i = 0; i < imageFiles.length; i++) {
-      const file = imageFiles[i]
-      if (file.size > 0) {
-        const res = await uploadImage(file)
-        if (i === 0) {
-          image = res.url
-          imageId = res.publicId
-        } else {
-          galleryUrls.push(res.url)
-        }
-      }
-    }
-
     const product = await db.product.create({
       data: {
-        name, measure, price, salePrice, image, imageId, categoryId, isActive: true, stock,
-        gallery: galleryUrls,
+        name, measure, price,
+        image: main.url, imageId: main.publicId,
+        categoryId, isActive: true, stock: 99, salePrice: null,
+        gallery: finalImages.slice(1).map(i => i.url),
         videoUrl,
         variants: variants.length > 0
           ? { create: variants.map(v => ({ name: v.name, image: v.image, imageId: v.imageId, stock: v.stock, price: v.price })) }
@@ -139,6 +139,7 @@ export async function createProduct(formData: FormData) {
   }
 }
 
+// Update product — same contract: finalImages already uploaded, cleanup of removed images
 export async function updateProduct(id: string, formData: FormData) {
   const authed = await requireAuth()
   if (!authed) return { success: false, error: 'No autorizado' }
@@ -148,13 +149,31 @@ export async function updateProduct(id: string, formData: FormData) {
     const measure = formData.get('measure') as string
     const price = parseFloat(formData.get('price') as string)
     const categoryId = formData.get('categoryId') as string
-    const stock = parseInt(formData.get('stock') as string) || 0
     const videoUrl = (formData.get('videoUrl') as string) || null
 
-    const salePriceRaw = formData.get('salePrice') as string
-    const salePrice = salePriceRaw ? parseFloat(salePriceRaw) : null
+    const finalImagesRaw = formData.get('finalImages') as string
+    let finalImages: FinalImage[] = []
+    try {
+      const parsed = JSON.parse(finalImagesRaw || '[]')
+      if (Array.isArray(parsed)) finalImages = parsed
+    } catch (parseError) {
+      console.error('Error parsing finalImages JSON:', parseError)
+      finalImages = []
+    }
 
-    const existingOrderedUrls = JSON.parse(formData.get('orderedUrls') as string || '[]') as string[]
+    if (finalImages.length === 0) return { success: false, error: 'Falta la imagen del producto' }
+
+    // Cleanup: delete from Cloudinary the old images that are no longer in the final list
+    const oldProduct = await db.product.findUnique({ where: { id }, select: { image: true, imageId: true, gallery: true } })
+    if (oldProduct) {
+      const finalUrls = new Set(finalImages.map(i => i.url))
+      const oldUrls = [oldProduct.image, ...(oldProduct.gallery || [])].filter(Boolean) as string[]
+      for (const oldUrl of oldUrls) {
+        if (!finalUrls.has(oldUrl) && oldUrl === oldProduct.image && oldProduct.imageId) {
+          try { await deleteImage(oldProduct.imageId) } catch (e) {}
+        }
+      }
+    }
 
     const variantsRaw = formData.get('variants') as string
     let variants: VariantInput[] = []
@@ -172,60 +191,14 @@ export async function updateProduct(id: string, formData: FormData) {
       variants = []
     }
 
-    const oldProduct = await db.product.findUnique({ where: { id }, select: { image: true, imageId: true, gallery: true } })
-    const oldUrls = [oldProduct?.image, ...(oldProduct?.gallery || [])].filter(Boolean) as string[]
-
-    let finalImage = ''
-    let finalImageId = null
-    const finalGallery: string[] = []
-
-    const newFiles = formData.getAll('images') as File[]
-    let fileIndex = 0
-
-    for (let i = 0; i < existingOrderedUrls.length; i++) {
-      const url = existingOrderedUrls[i]
-      if (url === 'NEW_FILE') {
-        if (newFiles[fileIndex]) {
-          const res = await uploadImage(newFiles[fileIndex])
-          if (i === 0) {
-            finalImage = res.url
-            finalImageId = res.publicId
-          } else {
-            finalGallery.push(res.url)
-          }
-          fileIndex++
-        }
-      } else {
-        if (i === 0) {
-          finalImage = url
-          finalImageId = oldProduct?.image === url ? oldProduct.imageId : null
-        } else {
-          finalGallery.push(url)
-        }
-      }
-    }
-
-    for (const oldUrl of oldUrls) {
-      if (!existingOrderedUrls.includes(oldUrl)) {
-        if (oldUrl === oldProduct?.image && oldProduct.imageId) {
-          try { await deleteImage(oldProduct.imageId) } catch (e) {}
-        }
-      }
-    }
-
-    const currentVariants = await db.productVariant.findMany({ where: { productId: id } })
-    for (const cv of currentVariants) {
-      const stillExists = variants.find(v => v.imageId === cv.imageId)
-      if (!stillExists && cv.imageId) {
-        try { await deleteImage(cv.imageId) } catch (e) {}
-      }
-    }
-
+    const main = finalImages[0]
     const product = await db.product.update({
       where: { id },
       data: {
-        name, measure, price, salePrice, image: finalImage, imageId: finalImageId, categoryId, stock,
-        gallery: finalGallery,
+        name, measure, price,
+        image: main.url, imageId: main.publicId,
+        categoryId,
+        gallery: finalImages.slice(1).map(i => i.url),
         videoUrl,
         variants: {
           deleteMany: {},
@@ -298,32 +271,6 @@ export async function updateStock(id: string, newStock: number) {
     return { success: true, product: updatedProduct }
   } catch (error) {
     return { success: false, error: 'Error al actualizar stock' }
-  }
-}
-
-export async function uploadVariantImage(formData: FormData) {
-  const authed = await requireAuth()
-  if (!authed) return { success: false, error: 'No autorizado' }
-
-  try {
-    const imageFile = formData.get('image') as File
-    if (!imageFile || imageFile.size === 0) return { success: false, error: 'No se proporcionó imagen' }
-    const uploadResult = await uploadImage(imageFile)
-    return { success: true, image: uploadResult.url, imageId: uploadResult.publicId }
-  } catch (error) {
-    return { success: false, error: 'Error al subir la imagen' }
-  }
-}
-
-export async function deleteVariantImage(imageId: string) {
-  const authed = await requireAuth()
-  if (!authed) return { success: false, error: 'No autorizado' }
-
-  try {
-    await deleteImage(imageId)
-    return { success: true }
-  } catch (error) {
-    return { success: false, error: 'Error al eliminar la imagen' }
   }
 }
 

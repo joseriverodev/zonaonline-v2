@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 import { Search, Plus, Edit, Trash2, Pause, Play, Package, Tags, LogOut, X, Gem, LayoutDashboard, Check, Loader2, Crown, Settings, ImageIcon, ExternalLink, Image as ImageIconBanner } from 'lucide-react'
-import { getProducts, getCategories, createProduct, updateProduct, deleteProduct, toggleProductActive, createCategory, updateCategory, deleteCategory, uploadVariantImage } from '@/actions/products'
+import { getProducts, getCategories, createProduct, updateProduct, deleteProduct, toggleProductActive, createCategory, updateCategory, deleteCategory } from '@/actions/products'
 import { getSiteConfig, updateSiteConfig, getAllBanners, upsertBanner, deleteBanner } from '@/actions/config'
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { arrayMove, SortableContext, rectSortingStrategy, useSortable, sortableKeyboardCoordinates } from '@dnd-kit/sortable'
@@ -13,6 +13,28 @@ import { CSS } from '@dnd-kit/utilities'
 import { SidebarTrigger } from '@/components/ui/sidebar'
 import imageCompression from 'browser-image-compression'
 import { login, logout } from '@/actions/auth'
+
+const CLOUD_NAME = "dg4yc"
+const UPLOAD_PRESET = "zonaonline_unsigned"
+
+function uploadDirect(file: File): Promise<{ url: string; publicId: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`)
+    const form = new FormData()
+    form.append('file', file)
+    form.append('upload_preset', UPLOAD_PRESET)
+    xhr.onload = () => {
+      try {
+        const res = JSON.parse(xhr.responseText)
+        if (res.secure_url) resolve({ url: res.secure_url, publicId: res.public_id })
+        else reject(new Error(res.error?.message || 'Error subiendo imagen'))
+      } catch (e) { reject(e) }
+    }
+    xhr.onerror = () => reject(new Error('Error de conexión al subir imagen'))
+    xhr.send(form)
+  })
+}
 
 const normalizeText = (text: string | null | undefined): string => {
   if (!text) return "";
@@ -75,6 +97,7 @@ export default function AdminPage() {
   const [isSubmittingConfig, setIsSubmittingConfig] = useState(false)
   const [isSubmittingBanner, setIsSubmittingBanner] = useState(false)
   const [previewImage, setPreviewImage] = useState<string | null>(null)
+  const [uploadStatus, setUploadStatus] = useState<{ done: number; total: number } | null>(null)
 
   const [productName, setProductName] = useState(''); const [productMeasure, setProductMeasure] = useState(''); const [productPrice, setProductPrice] = useState(''); const [productCategory, setProductCategory] = useState(''); const [productVideoUrl, setProductVideoUrl] = useState(''); const [isDragging, setIsDragging] = useState(false); const [unifiedImages, setUnifiedImages] = useState<{ url: string; file?: File }[]>([]); const [externalImageUrl, setExternalImageUrl] = useState(''); const [productVariants, setProductVariants] = useState<ProductVariant[]>([])
   const [categoryName, setCategoryName] = useState('')
@@ -138,42 +161,67 @@ export default function AdminPage() {
 
   const handleAddVariant = () => setProductVariants(prev => [...prev, { name: '', image: '', imageId: null, isNew: true }])
   const handleUpdateVariant = (index: number, field: keyof ProductVariant, value: any) => setProductVariants(prev => prev.map((v, i) => i === index ? { ...v, [field]: value } : v))
-  const handleVariantImageUpload = async (index: number, file: File | null) => { if (!file) return; setProductVariants(prev => prev.map((v, i) => i === index ? { ...v, isUploading: true } : v)); try { const compressed = await imageCompression(file, { maxSizeMB: 4.0, maxWidthOrHeight: 4096, useWebWorker: true }); const formData = new FormData(); formData.append('image', compressed); const result = await uploadVariantImage(formData); if (result.success) setProductVariants(prev => prev.map((v, i) => i === index ? { ...v, image: result.image!, imageId: result.imageId!, isUploading: false } : v)) } catch (error) { console.error(error); setProductVariants(prev => prev.map((v, i) => i === index ? { ...v, isUploading: false } : v)) } }
+  const handleVariantImageUpload = async (index: number, file: File | null) => {
+    if (!file) return
+    setProductVariants(prev => prev.map((v, i) => i === index ? { ...v, isUploading: true } : v))
+    try {
+      const compressed = await imageCompression(file, { maxSizeMB: 0.8, maxWidthOrHeight: 1600, useWebWorker: true })
+      const res = await uploadDirect(compressed)
+      setProductVariants(prev => prev.map((v, i) => i === index ? { ...v, image: res.url, imageId: res.publicId, isUploading: false } : v))
+    } catch (error) {
+      console.error(error)
+      alert('Error al subir la imagen de la variante')
+      setProductVariants(prev => prev.map((v, i) => i === index ? { ...v, isUploading: false } : v))
+    }
+  }
 
   const handleSubmitProduct = async (e: React.FormEvent) => {
     e.preventDefault(); if (isSubmittingProduct) return; if (!productName.trim() || !productMeasure.trim() || !productPrice || parseFloat(productPrice) <= 0 || !productCategory || unifiedImages.length === 0) return alert('Faltan datos obligatorios')
     setIsSubmittingProduct(true)
 
-    // Comprimir cada imagen antes de enviar (Vercel limita cada request a ~4.5MB)
-    const compressedImages: File[] = []
     try {
-      for (const img of unifiedImages) {
+      // 1. Comprimir + subir cada imagen DIRECTO a Cloudinary, en paralelo
+      const filesToUpload = unifiedImages.filter(img => img.file)
+      const existingUrls = unifiedImages.filter(img => !img.file)
+
+      setUploadStatus({ done: 0, total: filesToUpload.length })
+
+      const uploadedResults = await Promise.all(filesToUpload.map(async (img) => {
+        const compressed = await imageCompression(img.file!, { maxSizeMB: 0.8, maxWidthOrHeight: 1600, useWebWorker: true })
+        const res = await uploadDirect(compressed)
+        setUploadStatus(prev => prev ? { ...prev, done: prev.done + 1 } : prev)
+        return { url: res.url, publicId: res.publicId }
+      }))
+
+      // 2. Armar la lista final respetando el orden de la galería (drag & drop)
+      let uploadIdx = 0
+      const finalImages: { url: string; publicId: string | null }[] = unifiedImages.map(img => {
         if (img.file) {
-          try {
-            const compressed = await imageCompression(img.file, { maxSizeMB: 1.0, maxWidthOrHeight: 2000, useWebWorker: true })
-            compressedImages.push(compressed)
-          } catch {
-            compressedImages.push(img.file)
-          }
+          const res = uploadedResults[uploadIdx++]
+          return { url: res.url, publicId: res.publicId }
         }
-      }
+        return { url: img.url, publicId: null }
+      })
+
+      setUploadStatus(null)
+
+      // 3. Server action solo escribe en la base: sub-second
+      const formData = new FormData()
+      formData.append('name', productName.trim()); formData.append('measure', productMeasure.trim()); formData.append('price', productPrice); formData.append('categoryId', productCategory); formData.append('videoUrl', productVideoUrl)
+      formData.append('finalImages', JSON.stringify(finalImages))
+      formData.append('variants', JSON.stringify(productVariants.filter(v => v.name.trim() !== '').map(v => ({ name: v.name, image: v.image, imageId: v.imageId, stock: 99, price: null }))))
+
+      let result = editingProduct ? await updateProduct(editingProduct.id, formData) : await createProduct(formData)
+      if (result.success && result.product) {
+        if (editingProduct) setProducts(products.map(p => p.id === editingProduct.id ? result.product as Product : p))
+        else setProducts([result.product as Product, ...products])
+        closeProductModal()
+      } else alert(result.error || 'Error')
     } catch (error) {
       console.error(error)
-    }
-
-    // Guardia: si el total igual supera el límite, avisar en cristiano
-    const totalBytes = compressedImages.reduce((t, f) => t + f.size, 0)
-    if (totalBytes > 3_500_000) {
-      setIsSubmittingProduct(false)
-      return alert('Son muchas o muy pesadas las fotos de esta publicación. Intenta con menos fotos por publicación.')
-    }
-
-    const formData = new FormData()
-    formData.append('name', productName.trim()); formData.append('measure', productMeasure.trim()); formData.append('price', productPrice); formData.append('salePrice', ''); formData.append('stock', '99'); formData.append('categoryId', productCategory); formData.append('videoUrl', productVideoUrl)
-    formData.append('variants', JSON.stringify(productVariants.filter(v => v.name.trim() !== '').map(v => ({ name: v.name, image: v.image, imageId: v.imageId, stock: 99, price: null }))))
-    formData.append('orderedUrls', JSON.stringify(unifiedImages.map(img => img.file ? 'NEW_FILE' : img.url)))
-    compressedImages.forEach(f => formData.append('images', f))
-    try { let result = editingProduct ? await updateProduct(editingProduct.id, formData) : await createProduct(formData); if (result.success && result.product) { if (editingProduct) setProducts(products.map(p => p.id === editingProduct.id ? result.product as Product : p)); else setProducts([result.product as Product, ...products]); closeProductModal() } else alert(result.error || 'Error') } catch (error) { console.error(error); alert('Error de conexión. Intenta de nuevo.') } finally { setIsSubmittingProduct(false) }
+      setUploadStatus(null)
+      alert('Error al subir las imágenes. Revisa tu conexión e intenta de nuevo.')
+    } finally { setIsSubmittingProduct(false) }
   }
 
   const handleSubmitCategory = async (e: React.FormEvent) => {
@@ -221,7 +269,7 @@ export default function AdminPage() {
     setCurrentBannerImage(banner.imageUrl); setBannerImage(null); setShowBannerModal(true)
   }
 
-  const closeProductModal = () => { setShowProductModal(false); setEditingProduct(null); setProductName(''); setProductMeasure(''); setProductPrice(''); setProductCategory(''); setProductVideoUrl(''); setUnifiedImages([]); setProductVariants([]); setExternalImageUrl(''); setIsSubmittingProduct(false); if (fileInputRef.current) fileInputRef.current.value = '' }
+  const closeProductModal = () => { setShowProductModal(false); setEditingProduct(null); setProductName(''); setProductMeasure(''); setProductPrice(''); setProductCategory(''); setProductVideoUrl(''); setUnifiedImages([]); setProductVariants([]); setExternalImageUrl(''); setIsSubmittingProduct(false); setUploadStatus(null); if (fileInputRef.current) fileInputRef.current.value = '' }
   const closeCategoryModal = () => { setShowCategoryModal(false); setEditingCategory(null); setCategoryName(''); setIsSubmittingCategory(false) }
   const closeBannerModal = () => { setShowBannerModal(false); setEditingBanner(null); setBannerTitle1(''); setBannerTitle2(''); setBannerSubtitle(''); setBannerButtonText(''); setBannerButtonLink(''); setBannerImage(null); setCurrentBannerImage(''); setBannerTextPosition('ml'); setBannerTextColor('white'); setBannerTextColor2('pink'); setBannerFontFamily('playfair'); setBannerOverlayColor('black'); setBannerOverlayOpacity(40); setBannerMobileImage(null); setCurrentMobileBannerImage(''); setBannerMobileImageFocus('center'); setIsSubmittingBanner(false); if (bannerInputRef.current) bannerInputRef.current.value = ''; if (mobileBannerInputRef.current) mobileBannerInputRef.current.value = '' }
 
@@ -400,7 +448,7 @@ export default function AdminPage() {
 
       {showProductModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-start sm:items-center justify-center sm:p-6 overflow-hidden">
-          <div className="bg-white w-full h-full sm:h-auto sm:max-h-[calc(100vh-3rem)] sm:max-w-3xl sm:rounded-3xl shadow-[0_20px_50px_rgba(0,0,0,0.1)] flex flex-col sm:max-h-[calc(100vh-3rem)]">
+          <div className="bg-white w-full h-full sm:h-auto sm:max-h-[calc(100vh-3rem)] sm:max-w-3xl sm:rounded-3xl shadow-[0_20px_50px_rgba(0,0,0,0.1)] flex flex-col">
             <div className="p-4 md:p-6 border-b border-black/5 flex items-center justify-between shrink-0 sm:rounded-t-3xl bg-white">
               <div className="flex items-center gap-3">
                 <h2 className="text-lg md:text-xl font-semibold text-[#1F1F1F]">{editingProduct ? 'Editar Producto' : 'Nuevo Producto'}</h2>
@@ -417,15 +465,15 @@ export default function AdminPage() {
                   <h3 className="text-sm font-medium text-[#0369A1] uppercase tracking-wider">Información Básica</h3>
                   <div>
                     <label className="block text-xs font-medium text-[#6B6B6B] mb-2">Nombre del producto *</label>
-                    <Input value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="Ej: Camiseta de algodón talla M" disabled={isSubmittingProduct} className="h-12 border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl text-base" />
+                    <Input value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="Ej: Camiseta de algodón talla M" disabled={isSubmittingProduct || !!uploadStatus} className="h-12 border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl text-base" />
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-[#6B6B6B] mb-2">Descripción / Detalles *</label>
-                    <Textarea value={productMeasure} onChange={(e) => setProductMeasure(e.target.value)} placeholder="Ej: Algodón, incluye bolsa de regalo." disabled={isSubmittingProduct} className="border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl min-h-[80px] text-base" />
+                    <Textarea value={productMeasure} onChange={(e) => setProductMeasure(e.target.value)} placeholder="Ej: Algodón, incluye bolsa de regalo." disabled={isSubmittingProduct || !!uploadStatus} className="border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl min-h-[80px] text-base" />
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-[#6B6B6B] mb-2">Categoría *</label>
-                    <select value={productCategory} onChange={(e) => setProductCategory(e.target.value)} disabled={isSubmittingProduct} className="w-full h-12 px-3 border border-black/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#0369A1]/20 focus:border-[#0369A1] disabled:opacity-50 bg-white text-base">
+                    <select value={productCategory} onChange={(e) => setProductCategory(e.target.value)} disabled={isSubmittingProduct || !!uploadStatus} className="w-full h-12 px-3 border border-black/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#0369A1]/20 focus:border-[#0369A1] disabled:opacity-50 bg-white text-base">
                       <option value="">Seleccionar categoría</option>
                       {categories.map((cat) => (<option key={cat.id} value={cat.id}>{cat.name}</option>))}
                     </select>
@@ -436,7 +484,7 @@ export default function AdminPage() {
                   <h3 className="text-sm font-medium text-[#0369A1] uppercase tracking-wider">Precio</h3>
                   <div>
                     <label className="block text-xs font-medium text-[#6B6B6B] mb-2">Precio ($) *</label>
-                    <Input type="number" step="0.01" min="0" inputMode="decimal" value={productPrice} onChange={(e) => setProductPrice(e.target.value)} placeholder="0.00" disabled={isSubmittingProduct} className="h-12 border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl text-base" />
+                    <Input type="number" step="0.01" min="0" inputMode="decimal" value={productPrice} onChange={(e) => setProductPrice(e.target.value)} placeholder="0.00" disabled={isSubmittingProduct || !!uploadStatus} className="h-12 border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl text-base" />
                   </div>
                 </div>
 
@@ -449,12 +497,12 @@ export default function AdminPage() {
                         <p className="mb-2 text-sm text-[#1F1F1F]"><span className="font-semibold">Haz clic para subir</span> o arrastra aquí</p>
                         <p className="text-xs text-[#6B6B6B]">La 1ra imagen será la portada</p>
                       </div>
-                      <input id="dropzone-file" ref={fileInputRef} type="file" multiple accept="image/*" className="hidden" onChange={(e) => handleAddImages(e.target.files)} disabled={isSubmittingProduct} />
+                      <input id="dropzone-file" ref={fileInputRef} type="file" multiple accept="image/*" className="hidden" onChange={(e) => handleAddImages(e.target.files)} disabled={isSubmittingProduct || !!uploadStatus} />
                     </label>
                   </div>
                   <div className="flex gap-2">
-                    <Input type="text" value={externalImageUrl} onChange={(e) => setExternalImageUrl(e.target.value)} placeholder="O pega una URL de imagen externa aquí..." className="border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl" disabled={isSubmittingProduct} />
-                    <Button type="button" onClick={handleAddExternalImage} variant="outline" disabled={isSubmittingProduct} className="border-black/10 text-[#1F1F1F] hover:bg-[#F0F9FF] rounded-xl">Añadir URL</Button>
+                    <Input type="text" value={externalImageUrl} onChange={(e) => setExternalImageUrl(e.target.value)} placeholder="O pega una URL de imagen externa aquí..." className="border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl" disabled={isSubmittingProduct || !!uploadStatus} />
+                    <Button type="button" onClick={handleAddExternalImage} variant="outline" disabled={isSubmittingProduct || !!uploadStatus} className="border-black/10 text-[#1F1F1F] hover:bg-[#F0F9FF] rounded-xl">Añadir URL</Button>
                   </div>
                   {unifiedImages.length > 0 && (
                     <div className="bg-white p-4 rounded-xl border border-black/5">
@@ -476,7 +524,7 @@ export default function AdminPage() {
                   <h3 className="text-sm font-medium text-[#0369A1] uppercase tracking-wider">Multimedia Extra</h3>
                   <div>
                     <label className="block text-xs font-medium text-[#6B6B6B] mb-2">URL del Video (YouTube, TikTok, Drive) - Opcional</label>
-                    <Input type="url" value={productVideoUrl} onChange={(e) => setProductVideoUrl(e.target.value)} placeholder="https://youtube.com/watch?v=..." disabled={isSubmittingProduct} className="h-12 border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl" />
+                    <Input type="url" value={productVideoUrl} onChange={(e) => setProductVideoUrl(e.target.value)} placeholder="https://youtube.com/watch?v=..." disabled={isSubmittingProduct || !!uploadStatus} className="h-12 border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl" />
                     <p className="text-[10px] text-[#6B6B6B] mt-1">Si pegas un link aquí, aparecerá un botón de "Ver Video" en el producto.</p>
                   </div>
                 </div>
@@ -484,7 +532,7 @@ export default function AdminPage() {
                 <div className="space-y-4 border-t border-black/5 pt-6">
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-medium text-[#0369A1] uppercase tracking-wider">Variantes (Colores / Modelos)</h3>
-                    <Button type="button" onClick={handleAddVariant} variant="outline" disabled={isSubmittingProduct} className="border-black/10 text-[#1F1F1F] hover:bg-[#F0F9FF] rounded-xl h-10 text-sm px-4">
+                    <Button type="button" onClick={handleAddVariant} variant="outline" disabled={isSubmittingProduct || !!uploadStatus} className="border-black/10 text-[#1F1F1F] hover:bg-[#F0F9FF] rounded-xl h-10 text-sm px-4">
                       <Plus className="w-4 h-4 mr-1" /> Añadir
                     </Button>
                   </div>
@@ -501,7 +549,7 @@ export default function AdminPage() {
                               ) : (
                                 <ImageIcon className="w-6 h-6 text-[#6B6B6B]" />
                               )}
-                              <input type="file" accept="image/*" className="hidden" onChange={(e) => handleVariantImageUpload(index, e.target.files?.[0] || null)} disabled={isSubmittingProduct} />
+                              <input type="file" accept="image/*" className="hidden" onChange={(e) => handleVariantImageUpload(index, e.target.files?.[0] || null)} disabled={isSubmittingProduct || !!uploadStatus} />
                             </label>
                             <div className="flex-1 space-y-2">
                               <input
@@ -543,9 +591,11 @@ export default function AdminPage() {
               </div>
 
               <div className="p-4 md:p-6 border-t border-black/5 flex gap-4 shrink-0 bg-white sm:rounded-b-3xl">
-                <Button type="button" variant="outline" onClick={closeProductModal} disabled={isSubmittingProduct} className="flex-1 h-12 border-black/10 text-[#1F1F1F] hover:bg-black/5 rounded-xl text-base">Cancelar</Button>
-                <Button type="submit" disabled={isSubmittingProduct} className="flex-1 h-12 bg-[#0369A1] hover:bg-[#075985] text-white rounded-xl transition-colors duration-300 text-base">
-                  {isSubmittingProduct ? (
+                <Button type="button" variant="outline" onClick={closeProductModal} disabled={isSubmittingProduct || !!uploadStatus} className="flex-1 h-12 border-black/10 text-[#1F1F1F] hover:bg-black/5 rounded-xl text-base">Cancelar</Button>
+                <Button type="submit" disabled={isSubmittingProduct || !!uploadStatus} className="flex-1 h-12 bg-[#0369A1] hover:bg-[#075985] text-white rounded-xl transition-colors duration-300 text-base">
+                  {uploadStatus ? (
+                    <span>Subiendo imágenes {uploadStatus.done}/{uploadStatus.total}...</span>
+                  ) : isSubmittingProduct ? (
                     <span className="flex items-center gap-2">
                       <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full"></div>
                       Guardando...
