@@ -4,8 +4,8 @@ import { useState, useEffect, useRef } from 'react'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
-import { Search, Plus, Edit, Trash2, Pause, Play, Package, Tags, LogOut, X, Gem, LayoutDashboard, Check, Loader2, Crown, Settings, ImageIcon, ExternalLink, Image as ImageIconBanner } from 'lucide-react'
-import { getProducts, getCategories, createProduct, updateProduct, deleteProduct, toggleProductActive, createCategory, updateCategory, deleteCategory } from '@/actions/products'
+import { Search, Plus, Edit, Trash2, Pause, Play, Package, Tags, LogOut, X, Gem, LayoutDashboard, Check, Loader2, Crown, Settings, ImageIcon, ExternalLink, AlertTriangle, Image as ImageIconBanner } from 'lucide-react'
+import { getProducts, getCategories, createProduct, updateProduct, deleteProduct, toggleProductActive, createCategory, updateCategory, deleteCategory, uploadImageServer } from '@/actions/products'
 import { getSiteConfig, updateSiteConfig, getAllBanners, upsertBanner, deleteBanner } from '@/actions/config'
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { arrayMove, SortableContext, rectSortingStrategy, useSortable, sortableKeyboardCoordinates } from '@dnd-kit/sortable'
@@ -16,6 +16,7 @@ import { login, logout } from '@/actions/auth'
 
 const CLOUD_NAME = "dg4ycno52"
 const UPLOAD_PRESET = "zonaonline_unsigned"
+const PLACEHOLDER_IMG = "data:image/svg+xml;base64," + btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#F1F5F9"/><path d="M35 62 L48 45 L58 57 L66 50 L80 68 L20 68 Z" fill="#CBD5E1"/><circle cx="38" cy="36" r="6" fill="#CBD5E1"/></svg>')
 
 function uploadDirect(file: File): Promise<{ url: string; publicId: string }> {
   return new Promise((resolve, reject) => {
@@ -34,6 +35,51 @@ function uploadDirect(file: File): Promise<{ url: string; publicId: string }> {
     xhr.onerror = () => reject(new Error('Error de conexión al subir imagen'))
     xhr.send(form)
   })
+}
+
+async function uploadDirectWithRetry(file: File, attempts = 3): Promise<{ url: string; publicId: string }> {
+  let lastError: any
+  for (let i = 0; i < attempts; i++) {
+    try { return await uploadDirect(file) } catch (e) {
+      lastError = e
+      if (i < attempts - 1) await new Promise(r => setTimeout(r, 1000 * (i + 1)))
+    }
+  }
+  throw lastError
+}
+
+// Full chain: direct (x3 retries) → server-side upload as last resort
+async function uploadAny(file: File): Promise<{ url: string; publicId: string | null }> {
+  try {
+    return await uploadDirectWithRetry(file)
+  } catch (directError) {
+    console.error('Direct upload failed, trying server fallback:', directError)
+    const formData = new FormData()
+    formData.append('image', file)
+    const res = await uploadImageServer(formData)
+    if (res.success && res.url) return { url: res.url, publicId: res.publicId }
+    throw directError
+  }
+}
+
+// Compress with fallback: if compression fails for any reason, return the original
+async function compressSafe(file: File): Promise<File> {
+  try {
+    return await imageCompression(file, { maxSizeMB: 0.8, maxWidthOrHeight: 1600, useWebWorker: true })
+  } catch (e) {
+    console.error('Compression failed, using original file:', e)
+    return file
+  }
+}
+
+function safeSessionGet(key: string): string | null {
+  try { return sessionStorage.getItem(key) } catch { return null }
+}
+function safeSessionSet(key: string, value: string) {
+  try { sessionStorage.setItem(key, value) } catch {}
+}
+function safeSessionRemove(key: string) {
+  try { sessionStorage.removeItem(key) } catch {}
 }
 
 const normalizeText = (text: string | null | undefined): string => {
@@ -61,15 +107,18 @@ interface Product { id: string; name: string; measure: string; price: number; im
 interface Category { id: string; name: string; _count?: { products: number } }
 interface Banner { id: string; imageUrl: string; mobileImageUrl: string | null; mobileImageFocus: string; titleLine1: string | null; titleLine2: string | null; subtitle: string | null; buttonText: string | null; buttonLink: string | null; textPosition: string; textColor: string; textColor2: string; fontFamily: string; overlayColor: string; overlayOpacity: number; isActive: boolean }
 
-function SortableImage({ url, index, onRemove, onPreview }: { url: string, index: number, onRemove: (index: number) => void, onPreview: (url: string) => void }) {
+interface UnifiedImage { url: string; file?: File; failed?: boolean }
+
+function SortableImage({ img, index, onRemove, onPreview }: { img: UnifiedImage, index: number, onRemove: (index: number) => void, onPreview: (url: string) => void }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: `img-${index}` })
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }
   return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners} className="relative w-full h-24 rounded-xl overflow-hidden border border-black/10 group bg-[#FAFAFA] cursor-grab active:cursor-grabbing touch-none">
-      <img src={url} alt={`Imagen ${index}`} className="w-full h-full object-cover pointer-events-none" />
+    <div ref={setNodeRef} style={style} {...attributes} {...listeners} className={`relative w-full h-24 rounded-xl overflow-hidden border group bg-[#FAFAFA] cursor-grab active:cursor-grabbing touch-none ${img.failed ? 'border-red-300 bg-red-50' : 'border-black/10'}`}>
+      <img src={img.url} alt={`Imagen ${index}`} className="w-full h-full object-cover pointer-events-none" onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = PLACEHOLDER_IMG }} />
       <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors pointer-events-none"></div>
-      <button type="button" onClick={(e) => { e.stopPropagation(); onPreview(url); }} className="absolute inset-0 bg-black/0 active:bg-black/30 sm:group-hover:bg-black/20 transition-colors flex items-center justify-center opacity-0 active:opacity-100 sm:group-hover:opacity-100 z-[5]" title="Ver en grande"><span className="bg-white/90 text-[#0369A1] text-[10px] font-semibold px-2 py-1 rounded-full">Ver</span></button>
-      {index === 0 && (<div className="absolute top-1 left-1 bg-[#0369A1] text-white rounded-full p-1 shadow-sm pointer-events-none"><Crown className="w-3 h-3" /></div>)}
+      {img.failed && (<div className="absolute inset-0 bg-red-500/20 flex items-center justify-center pointer-events-none"><AlertTriangle className="w-5 h-5 text-red-600" /></div>)}
+      <button type="button" onClick={(e) => { e.stopPropagation(); onPreview(img.url); }} className="absolute inset-0 bg-black/0 active:bg-black/30 sm:group-hover:bg-black/20 transition-colors flex items-center justify-center opacity-0 active:opacity-100 sm:group-hover:opacity-100 z-[5]" title="Ver en grande"><span className="bg-white/90 text-[#0369A1] text-[10px] font-semibold px-2 py-1 rounded-full">Ver</span></button>
+      {index === 0 && !img.failed && (<div className="absolute top-1 left-1 bg-[#0369A1] text-white rounded-full p-1 shadow-sm pointer-events-none"><Crown className="w-3 h-3" /></div>)}
       <button type="button" onClick={(e) => { e.stopPropagation(); onRemove(index); }} className="absolute top-1 right-1 bg-black/50 text-white rounded-full p-1.5 opacity-0 active:opacity-100 sm:group-hover:opacity-100 transition-opacity z-10"><X className="w-3.5 h-3.5" /></button>
     </div>
   )
@@ -84,6 +133,7 @@ export default function AdminPage() {
   const [categories, setCategories] = useState<Category[]>([])
   const [banners, setBanners] = useState<Banner[]>([])
   const [loading, setLoading] = useState(true)
+  const [dataError, setDataError] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'paused'>('all')
   const [categoryFilter, setCategoryFilter] = useState('Todas')
@@ -99,8 +149,9 @@ export default function AdminPage() {
   const [isSubmittingBanner, setIsSubmittingBanner] = useState(false)
   const [previewImage, setPreviewImage] = useState<string | null>(null)
   const [uploadStatus, setUploadStatus] = useState<{ done: number; total: number } | null>(null)
+  const [isCompressing, setIsCompressing] = useState(false)
 
-  const [productName, setProductName] = useState(''); const [productMeasure, setProductMeasure] = useState(''); const [productPrice, setProductPrice] = useState(''); const [productCategory, setProductCategory] = useState(''); const [productVideoUrl, setProductVideoUrl] = useState(''); const [isDragging, setIsDragging] = useState(false); const [unifiedImages, setUnifiedImages] = useState<{ url: string; file?: File }[]>([]); const [externalImageUrl, setExternalImageUrl] = useState(''); const [productVariants, setProductVariants] = useState<ProductVariant[]>([])
+  const [productName, setProductName] = useState(''); const [productMeasure, setProductMeasure] = useState(''); const [productPrice, setProductPrice] = useState(''); const [productCategory, setProductCategory] = useState(''); const [productVideoUrl, setProductVideoUrl] = useState(''); const [isDragging, setIsDragging] = useState(false); const [unifiedImages, setUnifiedImages] = useState<UnifiedImage[]>([]); const [externalImageUrl, setExternalImageUrl] = useState(''); const [productVariants, setProductVariants] = useState<ProductVariant[]>([])
   const [categoryName, setCategoryName] = useState('')
   const [cfgWhatsapp, setCfgWhatsapp] = useState(''); const [cfgPhoneCall, setCfgPhoneCall] = useState(''); const [cfgInstagram, setCfgInstagram] = useState(''); const [cfgTiktok, setCfgTiktok] = useState('')
 
@@ -114,16 +165,22 @@ export default function AdminPage() {
   const mobileBannerInputRef = useRef<HTMLInputElement>(null)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }))
 
-  useEffect(() => { const auth = sessionStorage.getItem('adminAuth'); if (auth === 'true') setIsAuthenticated(true) }, [])
+  useEffect(() => { const auth = safeSessionGet('adminAuth'); if (auth === 'true') setIsAuthenticated(true) }, [])
   useEffect(() => { if (isAuthenticated) fetchData() }, [isAuthenticated])
 
   const fetchData = async () => {
-    setLoading(true)
-    try {
-      const [productsData, categoriesData, configData, bannersData] = await Promise.all([getProducts(), getCategories(), getSiteConfig(), getAllBanners()])
-      setProducts(productsData as Product[]); setCategories(categoriesData as Category[]); setBanners(bannersData as Banner[])
-      if (configData) { setCfgWhatsapp(configData.whatsapp || ''); setCfgPhoneCall(configData.phoneCall || ''); setCfgInstagram(configData.instagram || ''); setCfgTiktok(configData.tiktok || '') }
-    } catch (error) { console.error('Error:', error) } finally { setLoading(false) }
+    setLoading(true); setDataError(false)
+    // each endpoint independent: one failing does not kill the others
+    const [productsRes, categoriesRes, configRes, bannersRes] = await Promise.allSettled([getProducts(), getCategories(), getSiteConfig(), getAllBanners()])
+    if (productsRes.status === 'fulfilled') setProducts(productsRes.value as Product[])
+    if (categoriesRes.status === 'fulfilled') setCategories(categoriesRes.value as Category[])
+    if (bannersRes.status === 'fulfilled') setBanners(bannersRes.value as Banner[])
+    if (configRes.status === 'fulfilled' && configRes.value) {
+      const configData = configRes.value as any
+      setCfgWhatsapp(configData.whatsapp || ''); setCfgPhoneCall(configData.phoneCall || ''); setCfgInstagram(configData.instagram || ''); setCfgTiktok(configData.tiktok || '')
+    }
+    if (productsRes.status === 'rejected' || categoriesRes.status === 'rejected') setDataError(true)
+    setLoading(false)
   }
 
   const handleLogin = async () => {
@@ -131,7 +188,7 @@ export default function AdminPage() {
       const result = await login(password)
       if (result.success) {
         setIsAuthenticated(true)
-        sessionStorage.setItem('adminAuth', 'true')
+        safeSessionSet('adminAuth', 'true')
         setAuthError('')
       } else {
         setAuthError(result.error || 'Contraseña incorrecta')
@@ -141,9 +198,9 @@ export default function AdminPage() {
     }
   }
   const handleLogout = async () => {
-    await logout()
+    try { await logout() } catch {}
     setIsAuthenticated(false)
-    sessionStorage.removeItem('adminAuth')
+    safeSessionRemove('adminAuth')
   }
 
   const filteredProducts = products.filter(product => {
@@ -153,11 +210,23 @@ export default function AdminPage() {
     return matchesSearch && matchesCategory && matchesStatus
   })
 
-  const handleToggleActive = async (productId: string) => { try { const result = await toggleProductActive(productId); if (result.success && result.product) { setProducts(products.map(p => p.id === productId ? { ...p, isActive: result.product!.isActive } : p)) } } catch (error) { console.error(error) } }
-  const handleDeleteProduct = async (productId: string) => { if (!confirm('¿Eliminar producto?')) return; try { const result = await deleteProduct(productId); if (result.success) setProducts(products.filter(p => p.id !== productId)) } catch (error) { console.error(error) } }
-  const handleDeleteCategory = async (categoryId: string) => { if (!confirm('¿Eliminar categoría?')) return; try { const result = await deleteCategory(categoryId); if (result.success) setCategories(categories.filter(c => c.id !== categoryId)); else alert(result.error) } catch (error) { console.error(error) } }
+  const handleToggleActive = async (productId: string) => { try { const result = await toggleProductActive(productId); if (result.success && result.product) { setProducts(products.map(p => p.id === productId ? { ...p, isActive: result.product!.isActive } : p)) } else alert(result.error || 'Error') } catch { alert('Error de conexión. Intenta de nuevo.') } }
+  const handleDeleteProduct = async (productId: string) => { if (!confirm('¿Eliminar producto?')) return; try { const result = await deleteProduct(productId); if (result.success) setProducts(products.filter(p => p.id !== productId)); else alert(result.error || 'Error') } catch { alert('Error de conexión. Intenta de nuevo.') } }
+  const handleDeleteCategory = async (categoryId: string) => { if (!confirm('¿Eliminar categoría?')) return; try { const result = await deleteCategory(categoryId); if (result.success) setCategories(categories.filter(c => c.id !== categoryId)); else alert(result.error || 'Error') } catch { alert('Error de conexión. Intenta de nuevo.') } }
 
-  const handleAddImages = async (files: FileList | File[] | null) => { if (!files) return; const newImages: { url: string; file: File }[] = []; for (const file of Array.from(files)) { newImages.push({ url: URL.createObjectURL(file), file }) }; setUnifiedImages(prev => [...prev, ...newImages]) }
+  const handleAddImages = async (files: FileList | File[] | null) => {
+    if (!files) return
+    setIsCompressing(true)
+    for (const file of Array.from(files)) {
+      const preview = URL.createObjectURL(file)
+      setUnifiedImages(prev => [...prev, { url: preview, file }])
+      try {
+        const compressed = await compressSafe(file)
+        setUnifiedImages(prev => prev.map(img => img.file === file ? { ...img, file: compressed } : img))
+      } catch { /* fallback: original file stays */ }
+    }
+    setIsCompressing(false)
+  }
   const handleAddExternalImage = () => { if (!externalImageUrl) return alert('URL inválida.'); setUnifiedImages(prev => [...prev, { url: externalImageUrl }]); setExternalImageUrl('') }
   const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(true) }
   const handleDragLeave = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(false) }
@@ -171,46 +240,57 @@ export default function AdminPage() {
     if (!file) return
     setProductVariants(prev => prev.map((v, i) => i === index ? { ...v, isUploading: true } : v))
     try {
-      const compressed = await imageCompression(file, { maxSizeMB: 0.8, maxWidthOrHeight: 1600, useWebWorker: true })
-      const res = await uploadDirect(compressed)
+      const compressed = await compressSafe(file)
+      const res = await uploadAny(compressed)
       setProductVariants(prev => prev.map((v, i) => i === index ? { ...v, image: res.url, imageId: res.publicId, isUploading: false } : v))
     } catch (error) {
       console.error(error)
-      alert('Error al subir la imagen de la variante')
+      alert('No se pudo subir la imagen de la variante. Revisa tu conexión e intenta de nuevo.')
       setProductVariants(prev => prev.map((v, i) => i === index ? { ...v, isUploading: false } : v))
     }
   }
 
   const handleSubmitProduct = async (e: React.FormEvent) => {
-    e.preventDefault(); if (isSubmittingProduct) return; if (!productName.trim() || !productMeasure.trim() || !productPrice || parseFloat(productPrice) <= 0 || !productCategory || unifiedImages.length === 0) return alert('Faltan datos obligatorios')
+    e.preventDefault(); if (isSubmittingProduct) return
+    if (isCompressing) return alert('Un momento, aún se están procesando las imágenes.')
+    if (!productName.trim() || !productMeasure.trim() || !productPrice || parseFloat(productPrice) <= 0 || !productCategory || unifiedImages.length === 0) return alert('Faltan datos obligatorios')
     setIsSubmittingProduct(true)
 
     try {
-      // 1. Comprimir + subir cada imagen DIRECTO a Cloudinary, en paralelo
-      const filesToUpload = unifiedImages.filter(img => img.file)
+      // 1. Subir las imágenes pendientes (con cadena completa de fallbacks)
+      const pending = unifiedImages.filter(img => img.file)
+      setUploadStatus({ done: 0, total: pending.length })
 
-      setUploadStatus({ done: 0, total: filesToUpload.length })
-
-      const uploadedResults = await Promise.all(filesToUpload.map(async (img) => {
-        const compressed = await imageCompression(img.file!, { maxSizeMB: 0.8, maxWidthOrHeight: 1600, useWebWorker: true })
-        const res = await uploadDirect(compressed)
-        setUploadStatus(prev => prev ? { ...prev, done: prev.done + 1 } : prev)
-        return { url: res.url, publicId: res.publicId }
-      }))
-
-      // 2. Armar la lista final respetando el orden de la galería (drag & drop)
-      let uploadIdx = 0
-      const finalImages: { url: string; publicId: string | null }[] = unifiedImages.map(img => {
-        if (img.file) {
-          const res = uploadedResults[uploadIdx++]
-          return { url: res.url, publicId: res.publicId }
+      for (const img of pending) {
+        try {
+          const res = await uploadAny(img.file!)
+          setUnifiedImages(prev => prev.map(u => u === img ? { url: res.url, publicId: res.publicId } : u))
+        } catch (e) {
+          console.error('Imagen falló en todos los canales:', img.url, e)
+          setUnifiedImages(prev => prev.map(u => u === img ? { ...u, file: undefined, failed: true } : u))
         }
-        return { url: img.url, publicId: null }
-      })
+        setUploadStatus(prev => prev ? { ...prev, done: prev.done + 1 } : prev)
+      }
 
+      const stillPending = unifiedImages.filter(img => img.file).length
+      const failed = unifiedImages.filter(img => img.failed).length
       setUploadStatus(null)
 
-      // 3. Server action solo escribe en la base: sub-second
+      // 2. Si hubo imágenes fallidas, la dueña decide: guardar sin ellas o cancelar para reintentar
+      if (failed > 0) {
+        const proceed = confirm(`${failed} imagen(es) no se pudieron subir (falló la conexión con el servidor de imágenes).\n\n¿Guardar la publicación con las ${unifiedImages.length - failed} que sí subieron?\n\n(Si cancelas, puedes intentar de nuevo o quitar las imágenes con ícono de alerta)`)
+        setIsSubmittingProduct(false)
+        if (!proceed) return
+      }
+
+      // 3. Armar finalImages solo con las que subieron bien
+      const finalImages: { url: string; publicId: string | null }[] = unifiedImages
+        .filter(img => !img.failed)
+        .map(img => ({ url: img.url, publicId: null }))
+
+      if (finalImages.length === 0) { setIsSubmittingProduct(false); return alert('Ninguna imagen se pudo subir. Revisa tu conexión e intenta de nuevo.') }
+
+      // 4. Server action solo escribe en la base
       const formData = new FormData()
       formData.append('name', productName.trim()); formData.append('measure', productMeasure.trim()); formData.append('price', productPrice); formData.append('categoryId', productCategory); formData.append('videoUrl', productVideoUrl)
       formData.append('finalImages', JSON.stringify(finalImages))
@@ -221,25 +301,32 @@ export default function AdminPage() {
         if (editingProduct) setProducts(products.map(p => p.id === editingProduct.id ? result.product as Product : p))
         else setProducts([result.product as Product, ...products])
         closeProductModal()
-      } else alert(result.error || 'Error')
+      } else {
+        alert((result.error || 'Error') + '\n\nTus imágenes ya están subidas: vuelve a presionar Guardar y no se volverán a subir.')
+      }
     } catch (error) {
       console.error(error)
       setUploadStatus(null)
-      alert('Error al subir las imágenes. Revisa tu conexión e intenta de nuevo.')
+      alert('Error inesperado. Tus imágenes ya están subidas: vuelve a presionar Guardar.')
     } finally { setIsSubmittingProduct(false) }
   }
 
   const handleSubmitCategory = async (e: React.FormEvent) => {
     e.preventDefault(); if (isSubmittingCategory || !categoryName.trim()) return
-    setIsSubmittingCategory(true); try { const formData = new FormData(); formData.append('name', categoryName.trim()); let result = editingCategory ? await updateCategory(editingCategory.id, formData) : await createCategory(formData); if (result.success && result.category) { if (editingCategory) setCategories(categories.map(c => c.id === editingCategory.id ? result.category as Category : c)); else setCategories([...categories, result.category as Category]); closeCategoryModal() } } catch (error) { console.error(error) } finally { setIsSubmittingCategory(false) }
+    setIsSubmittingCategory(true); try { const formData = new FormData(); formData.append('name', categoryName.trim()); let result = editingCategory ? await updateCategory(editingCategory.id, formData) : await createCategory(formData); if (result.success && result.category) { if (editingCategory) setCategories(categories.map(c => c.id === editingCategory.id ? result.category as Category : c)); else setCategories([...categories, result.category as Category]); closeCategoryModal() } else alert(result.error || 'Error') } catch { alert('Error de conexión. Intenta de nuevo.') } finally { setIsSubmittingCategory(false) }
   }
 
   const handleSubmitConfig = async (e: React.FormEvent) => {
     e.preventDefault(); if (isSubmittingConfig) return; setIsSubmittingConfig(true)
-    try { const formData = new FormData(); formData.append('whatsapp', cfgWhatsapp); formData.append('phoneCall', cfgPhoneCall); formData.append('instagram', cfgInstagram); formData.append('tiktok', cfgTiktok); const result = await updateSiteConfig(formData); if (result.success) { alert('Configuración guardada'); fetchData() } else alert(result.error) } catch (error) { console.error(error) } finally { setIsSubmittingConfig(false) }
+    try { const formData = new FormData(); formData.append('whatsapp', cfgWhatsapp); formData.append('phoneCall', cfgPhoneCall); formData.append('instagram', cfgInstagram); formData.append('tiktok', cfgTiktok); const result = await updateSiteConfig(formData); if (result.success) { alert('Configuración guardada'); fetchData() } else alert(result.error) } catch { alert('Error de conexión. Intenta de nuevo.') } finally { setIsSubmittingConfig(false) }
   }
 
   const handleBannerKeyDown = (e: React.KeyboardEvent) => { if (e.key === 'Enter') { e.preventDefault(); const target = e.target as HTMLInputElement | HTMLTextAreaElement; if (target.tagName === 'TEXTAREA' && target.selectionStart !== null && target.selectionEnd !== null) { const start = target.selectionStart; const end = target.selectionEnd; target.value = target.value.substring(0, start) + '\n' + target.value.substring(end); target.selectionStart = target.selectionEnd = start + 1 } } }
+
+  const handleBannerImageSelect = async (file: File | null, isMobile: boolean) => {
+    if (!file) return
+    if (isMobile) { setBannerMobileImage(await compressSafe(file)) } else { setBannerImage(await compressSafe(file)) }
+  }
 
   const handleSubmitBanner = async (e: React.FormEvent) => {
     e.preventDefault(); if (isSubmittingBanner) return; if (!bannerImage && !currentBannerImage) return alert('La imagen es obligatoria')
@@ -256,9 +343,9 @@ export default function AdminPage() {
       if (bannerMobileImage) formData.append('mobileImage', bannerMobileImage)
       const result = await upsertBanner(formData)
       if (result.success) { closeBannerModal(); fetchData() } else alert(result.error)
-    } catch (error) { console.error(error) } finally { setIsSubmittingBanner(false) }
+    } catch { alert('Error de conexión. Intenta de nuevo.') } finally { setIsSubmittingBanner(false) }
   }
-  const handleDeleteBanner = async (id: string) => { if (!confirm('¿Eliminar banner?')) return; try { const result = await deleteBanner(id); if (result.success) setBanners(banners.filter(b => b.id !== id)) } catch (error) { console.error(error) } }
+  const handleDeleteBanner = async (id: string) => { if (!confirm('¿Eliminar banner?')) return; try { const result = await deleteBanner(id); if (result.success) setBanners(banners.filter(b => b.id !== id)) } catch { alert('Error de conexión. Intenta de nuevo.') } }
 
   const openEditProduct = (product: Product) => {
     setEditingProduct(product); setProductName(product.name); setProductMeasure(product.measure); setProductPrice(product.price.toString()); setProductCategory(product.categoryId); setProductVideoUrl(product.videoUrl || '')
@@ -303,7 +390,7 @@ export default function AdminPage() {
         <div className="max-w-7xl mx-auto px-3 md:px-8 py-3 md:py-4 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <SidebarTrigger className="text-[#1F1F1F] hover:bg-black/5 rounded-lg p-2 md:hidden" />
-            <img src="/icon.png" alt="Store logo" className="h-9 w-auto md:hidden" />
+            <img src="/icon.png" alt="Store logo" className="h-9 w-auto md:hidden" onError={(e) => { e.currentTarget.style.display = 'none' }} />
             <LayoutDashboard className="w-6 h-6 text-[#0369A1] hidden md:block" />
             <span className="text-base md:text-xl font-semibold text-[#1F1F1F] tracking-tight">Panel de Administración</span>
           </div>
@@ -312,6 +399,12 @@ export default function AdminPage() {
       </header>
 
       <main className="max-w-7xl mx-auto px-3 md:px-8 py-5 md:py-8 pb-24 md:pb-8">
+        {dataError && (
+          <div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 flex items-center justify-between gap-4">
+            <p className="text-sm text-amber-800">Algunos datos no cargaron completamente. La información mostrada puede estar desactualizada.</p>
+            <Button onClick={fetchData} variant="outline" className="h-10 border-amber-300 text-amber-800 hover:bg-amber-100 rounded-xl shrink-0">Reintentar</Button>
+          </div>
+        )}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 md:gap-4 mb-5 md:mb-8">
           <div onClick={() => { setActiveTab('products'); setStatusFilter('all'); }} className={`rounded-xl md:rounded-2xl p-3 md:p-5 border bg-white cursor-pointer transition-all hover:shadow-md ${statusFilter === 'all' && activeTab === 'products' ? 'border-[#0369A1] shadow-md' : 'border-black/5 shadow-sm'}`}><p className="text-[#6B6B6B] text-[10px] md:text-xs uppercase tracking-wider mb-1">Total</p><p className="text-2xl md:text-3xl font-semibold text-[#1F1F1F]">{products.length}</p></div>
           <div onClick={() => { setActiveTab('products'); setStatusFilter('active'); }} className={`rounded-xl md:rounded-2xl p-3 md:p-5 border bg-white cursor-pointer transition-all hover:shadow-md ${statusFilter === 'active' && activeTab === 'products' ? 'border-[#0369A1] shadow-md' : 'border-black/5 shadow-sm'}`}><p className="text-[#6B6B6B] text-[10px] md:text-xs uppercase tracking-wider mb-1">Activos</p><p className="text-2xl md:text-3xl font-semibold text-green-600">{products.filter(p => p.isActive).length}</p></div>
@@ -347,7 +440,7 @@ export default function AdminPage() {
                   {filteredProducts.map((product) => (
                     <div key={product.id} className={`bg-white rounded-2xl border border-black/5 shadow-sm overflow-hidden ${!product.isActive ? 'opacity-60' : ''}`}>
                       <div className="relative h-52 bg-[#FAFAFA]" onClick={() => setPreviewImage(product.image)}>
-                        {product.image ? <img src={product.image} alt={product.name} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center"><Package className="w-10 h-10 text-[#6B6B6B]" /></div>}
+                        <img src={product.image || PLACEHOLDER_IMG} alt={product.name} className="w-full h-full object-cover" onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = PLACEHOLDER_IMG }} />
                         <span className={`absolute top-3 right-3 px-3 py-1.5 rounded-full text-xs font-semibold ${product.isActive ? 'bg-[#0369A1] text-white' : 'bg-[#1F1F1F]/70 text-white'}`}>{product.isActive ? 'Activo' : 'Pausado'}</span>
                         <span className="absolute bottom-3 right-3 bg-black/50 text-white text-[10px] px-2.5 py-1 rounded-full">Toca la foto para ampliar</span>
                       </div>
@@ -376,7 +469,7 @@ export default function AdminPage() {
                     <tbody className="divide-y divide-black/5">
                       {filteredProducts.map((product) => (
                         <tr key={product.id} className={`hover:bg-[#F0F9FF] transition-colors ${!product.isActive ? 'opacity-60' : ''}`}>
-                          <td className="py-4 px-6"><div className="flex items-center gap-4"><div className="w-12 h-12 bg-[#FAFAFA] rounded-xl overflow-hidden border border-black/5 flex-shrink-0 cursor-pointer hover:ring-2 hover:ring-[#0369A1]/30" onClick={() => setPreviewImage(product.image)} title="Ver imagen en grande">{product.image ? <img src={product.image} alt={product.name} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center"><Package className="w-5 h-5 text-[#6B6B6B]" /></div>}</div><div><p className="font-medium text-[#1F1F1F]">{product.name}</p><p className="text-sm text-[#6B6B6B]">{product.measure.substring(0, 30)}</p></div></div></td>
+                          <td className="py-4 px-6"><div className="flex items-center gap-4"><div className="w-12 h-12 bg-[#FAFAFA] rounded-xl overflow-hidden border border-black/5 flex-shrink-0 cursor-pointer hover:ring-2 hover:ring-[#0369A1]/30" onClick={() => setPreviewImage(product.image)} title="Ver imagen en grande"><img src={product.image || PLACEHOLDER_IMG} alt={product.name} className="w-full h-full object-cover" onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = PLACEHOLDER_IMG }} /></div><div><p className="font-medium text-[#1F1F1F]">{product.name}</p><p className="text-sm text-[#6B6B6B]">{product.measure.substring(0, 30)}</p></div></div></td>
                           <td className="py-4 px-6"><span className="px-3 py-1 bg-[#F0F9FF] text-[#0369A1] rounded-full text-xs border border-black/5">{product.category?.name || 'N/A'}</span></td>
                           <td className="py-4 px-6 font-semibold text-[#1F1F1F]">${product.price.toFixed(2)}</td>
                           <td className="py-4 px-6"><span className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${product.isActive ? 'bg-[#0369A1]/10 text-[#0369A1]' : 'bg-black/5 text-[#6B6B6B]'}`}>{product.isActive ? 'Activo' : 'Pausado'}</span></td>
@@ -476,15 +569,15 @@ export default function AdminPage() {
                   <h3 className="text-sm font-medium text-[#0369A1] uppercase tracking-wider">Información Básica</h3>
                   <div>
                     <label className="block text-xs font-medium text-[#6B6B6B] mb-2">Nombre del producto *</label>
-                    <Input value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="Ej: Camiseta de algodón talla M" disabled={isSubmittingProduct || !!uploadStatus} className="h-12 border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl text-base" />
+                    <Input value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="Ej: Camiseta de algodón talla M" disabled={isSubmittingProduct || isCompressing} className="h-12 border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl text-base" />
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-[#6B6B6B] mb-2">Descripción / Detalles *</label>
-                    <Textarea value={productMeasure} onChange={(e) => setProductMeasure(e.target.value)} placeholder="Ej: Algodón, incluye bolsa de regalo." disabled={isSubmittingProduct || !!uploadStatus} className="border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl min-h-[80px] text-base" />
+                    <Textarea value={productMeasure} onChange={(e) => setProductMeasure(e.target.value)} placeholder="Ej: Algodón, incluye bolsa de regalo." disabled={isSubmittingProduct || isCompressing} className="border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl min-h-[80px] text-base" />
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-[#6B6B6B] mb-2">Categoría *</label>
-                    <select value={productCategory} onChange={(e) => setProductCategory(e.target.value)} disabled={isSubmittingProduct || !!uploadStatus} className="w-full h-12 px-3 border border-black/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#0369A1]/20 focus:border-[#0369A1] disabled:opacity-50 bg-white text-base">
+                    <select value={productCategory} onChange={(e) => setProductCategory(e.target.value)} disabled={isSubmittingProduct || isCompressing} className="w-full h-12 px-3 border border-black/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#0369A1]/20 focus:border-[#0369A1] disabled:opacity-50 bg-white text-base">
                       <option value="">Seleccionar categoría</option>
                       {categories.map((cat) => (<option key={cat.id} value={cat.id}>{cat.name}</option>))}
                     </select>
@@ -495,7 +588,7 @@ export default function AdminPage() {
                   <h3 className="text-sm font-medium text-[#0369A1] uppercase tracking-wider">Precio</h3>
                   <div>
                     <label className="block text-xs font-medium text-[#6B6B6B] mb-2">Precio ($) *</label>
-                    <Input type="number" step="0.01" min="0" inputMode="decimal" value={productPrice} onChange={(e) => setProductPrice(e.target.value)} placeholder="0.00" disabled={isSubmittingProduct || !!uploadStatus} className="h-12 border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl text-base" />
+                    <Input type="number" step="0.01" min="0" inputMode="decimal" value={productPrice} onChange={(e) => setProductPrice(e.target.value)} placeholder="0.00" disabled={isSubmittingProduct || isCompressing} className="h-12 border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl text-base" />
                   </div>
                 </div>
 
@@ -508,12 +601,13 @@ export default function AdminPage() {
                         <p className="mb-2 text-sm text-[#1F1F1F]"><span className="font-semibold">Haz clic para subir</span> o arrastra aquí</p>
                         <p className="text-xs text-[#6B6B6B]">La 1ra imagen será la portada</p>
                       </div>
-                      <input id="dropzone-file" ref={fileInputRef} type="file" multiple accept="image/*" className="hidden" onChange={(e) => handleAddImages(e.target.files)} disabled={isSubmittingProduct || !!uploadStatus} />
+                      <input id="dropzone-file" ref={fileInputRef} type="file" multiple accept="image/*" className="hidden" onChange={(e) => handleAddImages(e.target.files)} disabled={isSubmittingProduct || isCompressing} />
                     </label>
                   </div>
+                  {isCompressing && <p className="text-xs text-[#0369A1] text-center flex items-center justify-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> Procesando imágenes...</p>}
                   <div className="flex gap-2">
-                    <Input type="text" value={externalImageUrl} onChange={(e) => setExternalImageUrl(e.target.value)} placeholder="O pega una URL de imagen externa aquí..." className="border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl" disabled={isSubmittingProduct || !!uploadStatus} />
-                    <Button type="button" onClick={handleAddExternalImage} variant="outline" disabled={isSubmittingProduct || !!uploadStatus} className="border-black/10 text-[#1F1F1F] hover:bg-[#F0F9FF] rounded-xl">Añadir URL</Button>
+                    <Input type="text" value={externalImageUrl} onChange={(e) => setExternalImageUrl(e.target.value)} placeholder="O pega una URL de imagen externa aquí..." className="border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl" disabled={isSubmittingProduct || isCompressing} />
+                    <Button type="button" onClick={handleAddExternalImage} variant="outline" disabled={isSubmittingProduct || isCompressing} className="border-black/10 text-[#1F1F1F] hover:bg-[#F0F9FF] rounded-xl">Añadir URL</Button>
                   </div>
                   {unifiedImages.length > 0 && (
                     <div className="bg-white p-4 rounded-xl border border-black/5">
@@ -521,7 +615,7 @@ export default function AdminPage() {
                         <SortableContext items={unifiedImages.map((_, i) => `img-${i}`)} strategy={rectSortingStrategy}>
                           <div className="grid grid-cols-4 sm:grid-cols-5 gap-3">
                             {unifiedImages.map((img, index) => (
-                              <SortableImage key={`img-${index}`} url={img.url} index={index} onRemove={handleRemoveImage} onPreview={setPreviewImage} />
+                              <SortableImage key={`img-${index}`} img={img} index={index} onRemove={handleRemoveImage} onPreview={setPreviewImage} />
                             ))}
                           </div>
                         </SortableContext>
@@ -535,7 +629,7 @@ export default function AdminPage() {
                   <h3 className="text-sm font-medium text-[#0369A1] uppercase tracking-wider">Multimedia Extra</h3>
                   <div>
                     <label className="block text-xs font-medium text-[#6B6B6B] mb-2">URL del Video (YouTube, TikTok, Drive) - Opcional</label>
-                    <Input type="url" value={productVideoUrl} onChange={(e) => setProductVideoUrl(e.target.value)} placeholder="https://youtube.com/watch?v=..." disabled={isSubmittingProduct || !!uploadStatus} className="h-12 border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl" />
+                    <Input type="url" value={productVideoUrl} onChange={(e) => setProductVideoUrl(e.target.value)} placeholder="https://youtube.com/watch?v=..." disabled={isSubmittingProduct || isCompressing} className="h-12 border-black/10 focus:border-[#0369A1] focus:ring-[#0369A1]/20 rounded-xl" />
                     <p className="text-[10px] text-[#6B6B6B] mt-1">Si pegas un link aquí, aparecerá un botón de "Ver Video" en el producto.</p>
                   </div>
                 </div>
@@ -543,7 +637,7 @@ export default function AdminPage() {
                 <div className="space-y-4 border-t border-black/5 pt-6">
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-medium text-[#0369A1] uppercase tracking-wider">Variantes (Colores / Modelos)</h3>
-                    <Button type="button" onClick={handleAddVariant} variant="outline" disabled={isSubmittingProduct || !!uploadStatus} className="border-black/10 text-[#1F1F1F] hover:bg-[#F0F9FF] rounded-xl h-10 text-sm px-4">
+                    <Button type="button" onClick={handleAddVariant} variant="outline" disabled={isSubmittingProduct || isCompressing} className="border-black/10 text-[#1F1F1F] hover:bg-[#F0F9FF] rounded-xl h-10 text-sm px-4">
                       <Plus className="w-4 h-4 mr-1" /> Añadir
                     </Button>
                   </div>
@@ -560,7 +654,7 @@ export default function AdminPage() {
                               ) : (
                                 <ImageIcon className="w-6 h-6 text-[#6B6B6B]" />
                               )}
-                              <input type="file" accept="image/*" className="hidden" onChange={(e) => handleVariantImageUpload(index, e.target.files?.[0] || null)} disabled={isSubmittingProduct || !!uploadStatus} />
+                              <input type="file" accept="image/*" className="hidden" onChange={(e) => handleVariantImageUpload(index, e.target.files?.[0] || null)} disabled={isSubmittingProduct || isCompressing} />
                             </label>
                             <div className="flex-1 space-y-2">
                               <input
@@ -602,9 +696,11 @@ export default function AdminPage() {
               </div>
 
               <div className="p-4 md:p-6 border-t border-black/5 flex gap-4 shrink-0 bg-white sm:rounded-b-3xl">
-                <Button type="button" variant="outline" onClick={closeProductModal} disabled={isSubmittingProduct || !!uploadStatus} className="flex-1 h-12 border-black/10 text-[#1F1F1F] hover:bg-black/5 rounded-xl text-base">Cancelar</Button>
-                <Button type="submit" disabled={isSubmittingProduct || !!uploadStatus} className="flex-1 h-12 bg-[#0369A1] hover:bg-[#075985] text-white rounded-xl transition-colors duration-300 text-base">
-                  {uploadStatus ? (
+                <Button type="button" variant="outline" onClick={closeProductModal} disabled={isSubmittingProduct || isCompressing} className="flex-1 h-12 border-black/10 text-[#1F1F1F] hover:bg-black/5 rounded-xl text-base">Cancelar</Button>
+                <Button type="submit" disabled={isSubmittingProduct || isCompressing} className="flex-1 h-12 bg-[#0369A1] hover:bg-[#075985] text-white rounded-xl transition-colors duration-300 text-base">
+                  {isCompressing ? (
+                    <span>Procesando imágenes...</span>
+                  ) : uploadStatus ? (
                     <span>Subiendo imágenes {uploadStatus.done}/{uploadStatus.total}...</span>
                   ) : isSubmittingProduct ? (
                     <span className="flex items-center gap-2">
@@ -639,7 +735,7 @@ export default function AdminPage() {
               <div className="p-4 md:p-6 space-y-6 overflow-y-auto flex-grow">
                 <div>
                   <label className="block text-xs font-medium text-[#6B6B6B] mb-2 uppercase tracking-wider">Imagen del Banner (PC) *</label>
-                  <input ref={bannerInputRef} type="file" accept="image/*" onChange={(e) => setBannerImage(e.target.files?.[0] || null)} disabled={isSubmittingBanner} className="w-full text-sm text-[#6B6B6B] file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-medium file:bg-[#F0F9FF] file:text-[#0369A1] hover:file:bg-[#0369A1]/20 cursor-pointer" />
+                  <input ref={bannerInputRef} type="file" accept="image/*" onChange={(e) => handleBannerImageSelect(e.target.files?.[0] || null, false)} disabled={isSubmittingBanner} className="w-full text-sm text-[#6B6B6B] file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-medium file:bg-[#F0F9FF] file:text-[#0369A1] hover:file:bg-[#0369A1]/20 cursor-pointer" />
 
                   {(currentBannerImage || bannerImage) && (
                     <div className="mt-3 w-full h-40 rounded-xl overflow-hidden border border-black/10 relative">
@@ -659,7 +755,7 @@ export default function AdminPage() {
 
                 <div className="border-t border-black/5 pt-4">
                   <label className="block text-xs font-medium text-[#6B6B6B] mb-2 uppercase tracking-wider">Imagen para Móvil (Opcional)</label>
-                  <input ref={mobileBannerInputRef} type="file" accept="image/*" onChange={(e) => setBannerMobileImage(e.target.files?.[0] || null)} disabled={isSubmittingBanner} className="w-full text-sm text-[#6B6B6B] file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-medium file:bg-[#F0F9FF] file:text-[#0369A1] hover:file:bg-[#0369A1]/20 cursor-pointer" />
+                  <input ref={mobileBannerInputRef} type="file" accept="image/*" onChange={(e) => handleBannerImageSelect(e.target.files?.[0] || null, true)} disabled={isSubmittingBanner} className="w-full text-sm text-[#6B6B6B] file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-medium file:bg-[#F0F9FF] file:text-[#0369A1] hover:file:bg-[#0369A1]/20 cursor-pointer" />
                   {currentMobileBannerImage && <p className="text-[10px] text-green-600 mt-1">Ya tienes una imagen móvil cargada. Sube una nueva para reemplazarla.</p>}
                   <div className="mt-4">
                     <label className="block text-xs font-medium text-[#6B6B6B] mb-2 uppercase tracking-wider">Enfoque de Imagen en Móvil</label>

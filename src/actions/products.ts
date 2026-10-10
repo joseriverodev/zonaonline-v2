@@ -274,6 +274,22 @@ export async function updateStock(id: string, newStock: number) {
   }
 }
 
+// Fallback: server-side upload when the direct client-to-Cloudinary upload fails.
+// Chain: direct (x3 retries) -> this. Only used by the admin as last resort.
+export async function uploadImageServer(formData: FormData) {
+  const authed = await requireAuth()
+  if (!authed) return { success: false, error: 'No autorizado' }
+  try {
+    const imageFile = formData.get('image') as File
+    if (!imageFile || imageFile.size === 0) return { success: false, error: 'No se proporcionó imagen' }
+    const result = await uploadImage(imageFile)
+    return { success: true, url: result.url, publicId: result.publicId }
+  } catch (error) {
+    console.error('Server fallback upload error:', error)
+    return { success: false, error: 'Error al subir la imagen' }
+  }
+}
+
 // ============ CATEGORIES ============
 
 export async function getCategories() {
