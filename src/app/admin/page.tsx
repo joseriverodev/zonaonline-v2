@@ -257,40 +257,46 @@ export default function AdminPage() {
     setIsSubmittingProduct(true)
 
     try {
-      // 1. Subir las imágenes pendientes (con cadena completa de fallbacks)
-      const pending = unifiedImages.filter(img => img.file)
-      setUploadStatus({ done: 0, total: pending.length })
+      // finalImages se acumula LOCALMENTE con las URLs reales.
+      // Nunca se lee unifiedImages después de actualizarlo (stale state)
+      const finalImages: { url: string; publicId: string | null }[] = []
+      let failed = 0
+      const pendingCount = unifiedImages.filter(img => img.file).length
+      setUploadStatus({ done: 0, total: pendingCount })
 
-      for (const img of pending) {
-        try {
-          const res = await uploadAny(img.file!)
-          setUnifiedImages(prev => prev.map(u => u === img ? { url: res.url, publicId: res.publicId } : u))
-        } catch (e) {
-          console.error('Imagen falló en todos los canales:', img.url, e)
-          setUnifiedImages(prev => prev.map(u => u === img ? { ...u, file: undefined, failed: true } : u))
+      for (const img of unifiedImages) {
+        if (img.failed) continue
+
+        if (img.file) {
+          // imagen recién seleccionada: subir (con cadena completa de fallbacks)
+          try {
+            const res = await uploadAny(img.file)
+            finalImages.push({ url: res.url, publicId: res.publicId })
+            // solo para actualizar el preview visual; los datos van del acumulador local
+            setUnifiedImages(prev => prev.map(u => u === img ? { url: res.url, publicId: res.publicId } : u))
+          } catch (e) {
+            console.error('Imagen falló en todos los canales:', img.url, e)
+            failed++
+            setUnifiedImages(prev => prev.map(u => u === img ? { ...u, file: undefined, failed: true } : u))
+          }
+          setUploadStatus(prev => prev ? { ...prev, done: prev.done + 1 } : prev)
+        } else {
+          // imagen existente (edición) o URL externa: su URL ya es real
+          finalImages.push({ url: img.url, publicId: null })
         }
-        setUploadStatus(prev => prev ? { ...prev, done: prev.done + 1 } : prev)
       }
 
-      const stillPending = unifiedImages.filter(img => img.file).length
-      const failed = unifiedImages.filter(img => img.failed).length
       setUploadStatus(null)
 
-      // 2. Si hubo imágenes fallidas, la dueña decide: guardar sin ellas o cancelar para reintentar
       if (failed > 0) {
-        const proceed = confirm(`${failed} imagen(es) no se pudieron subir (falló la conexión con el servidor de imágenes).\n\n¿Guardar la publicación con las ${unifiedImages.length - failed} que sí subieron?\n\n(Si cancelas, puedes intentar de nuevo o quitar las imágenes con ícono de alerta)`)
+        const proceed = confirm(`${failed} imagen(es) no se pudieron subir (falló la conexión con el servidor de imágenes).\n\n¿Guardar la publicación con las ${finalImages.length} que sí subieron?\n\n(Si cancelas, intenta de nuevo o quita las imágenes con ícono de alerta)`)
         setIsSubmittingProduct(false)
         if (!proceed) return
       }
 
-      // 3. Armar finalImages solo con las que subieron bien
-      const finalImages: { url: string; publicId: string | null }[] = unifiedImages
-        .filter(img => !img.failed)
-        .map(img => ({ url: img.url, publicId: null }))
-
       if (finalImages.length === 0) { setIsSubmittingProduct(false); return alert('Ninguna imagen se pudo subir. Revisa tu conexión e intenta de nuevo.') }
 
-      // 4. Server action solo escribe en la base
+      // Server action solo escribe en la base
       const formData = new FormData()
       formData.append('name', productName.trim()); formData.append('measure', productMeasure.trim()); formData.append('price', productPrice); formData.append('categoryId', productCategory); formData.append('videoUrl', productVideoUrl)
       formData.append('finalImages', JSON.stringify(finalImages))
@@ -301,13 +307,11 @@ export default function AdminPage() {
         if (editingProduct) setProducts(products.map(p => p.id === editingProduct.id ? result.product as Product : p))
         else setProducts([result.product as Product, ...products])
         closeProductModal()
-      } else {
-        alert((result.error || 'Error') + '\n\nTus imágenes ya están subidas: vuelve a presionar Guardar y no se volverán a subir.')
-      }
+      } else alert(result.error || 'Error')
     } catch (error) {
       console.error(error)
       setUploadStatus(null)
-      alert('Error inesperado. Tus imágenes ya están subidas: vuelve a presionar Guardar.')
+      alert('Error inesperado. Intenta de nuevo.')
     } finally { setIsSubmittingProduct(false) }
   }
 
